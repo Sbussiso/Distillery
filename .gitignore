@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Node / frontend build artifacts
+frontend/node_modules/
+frontend/dist/
+
+# Local runtime artifacts
+server.log
+.env
+
+# Generated datasets (session exports are regenerated per run)
+datasets/

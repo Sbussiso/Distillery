@@ -1,0 +1,166 @@
+@import "tailwindcss";
+
+/* Class-based dark mode. Toggle <html class="dark">. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---------- LIGHT (default :root) ---------- */
+:root {
+  --bg:            #ffffff;
+  --surface:       #ffffff;
+  --surface-2:     #fafafa;
+  --surface-3:     #f4f4f5;        /* muted fill, table stripe, progress track */
+  --fg:            #09090b;        /* zinc-950 */
+  --fg-muted:      #52525b;        /* zinc-600 secondary */
+  --muted:         #71717a;        /* zinc-500 tertiary/placeholder */
+  --border:        #e4e4e7;        /* zinc-200 hairlines */
+  --border-strong: #d4d4d8;        /* zinc-300 input/check */
+  --accent:        #6366f1;        /* indigo-500 — single accent */
+  --accent-hover:  #4f46e5;        /* indigo-600 */
+  --accent-fg:     #ffffff;
+  --success:       #16a34a;        /* green-600 */
+  --danger:        #dc2626;         /* red-600 */
+  --warn:          #d97706;         /* amber-600 */
+  --info:          #2563eb;         /* blue-600 */
+  /* signature gradient stops — color-registered, indigo→violet (restrained) */
+  --grad-from:     #6366f1;        /* indigo-500 */
+  --grad-via:      #818cf8;        /* indigo-400 */
+  --grad-to:       #8b5cf6;        /* violet-500 */
+  --glow:          rgba(99, 102, 241, 0.45);
+
+  --shadow-xs: 0 1px 2px 0 rgb(9 9 11 / 0.04);
+  --shadow-sm: 0 1px 3px 0 rgb(9 9 11 / 0.06), 0 1px 2px -1px rgb(9 9 11 / 0.06);
+  --shadow-md: 0 4px 12px -2px rgb(9 9 11 / 0.08), 0 2px 6px -2px rgb(9 9 11 / 0.05);
+  --shadow-lg: 0 12px 32px -8px rgb(9 9 11 / 0.12), 0 4px 10px -4px rgb(9 9 11 / 0.06);
+
+  --radius-sm: 0.375rem;  /* 6px — pills, checkboxes */
+  --radius:    0.5rem;    /* 8px — cards, inputs */
+  --radius-lg: 0.75rem;   /* 12px — big panels */
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --font-display: var(--font-sans);   /* restraint: display == sans */
+
+  --text-xs:   0.75rem / 1rem;
+  --text-sm:   0.875rem / 1.25rem;
+  --text-base: 1rem / 1.5rem;
+  --text-lg:   1.125rem / 1.75rem;
+  --text-xl:   1.25rem / 1.75rem;
+  --text-2xl:  1.5rem / 2rem;
+
+  --animate-shimmer:   shimmer 2.2s linear infinite;
+  --animate-pulse-dot: pulse-dot 1.6s ease-in-out infinite;
+  --animate-fade-in:   fade-in 0.18s ease-out;
+  --animate-row-in:    row-in 0.24s ease-out;
+  --animate-stat-bump: stat-bump 0.13s ease-out;
+  --animate-flow:      flow 2.4s linear infinite;
+}
+
+/* ---------- DARK ---------- */
+.dark {
+  --bg:            #09090b;   /* zinc-950 */
+  --surface:       #18181b;   /* zinc-900 cards */
+  --surface-2:     #27272a;   /* zinc-800 hover/nested */
+  --surface-3:     #3f3f46;   /* zinc-700 muted/track */
+  --fg:            #fafafa;   /* zinc-50 */
+  --fg-muted:      #a1a1aa;   /* zinc-400 */
+  --muted:         #71717a;   /* zinc-500 */
+  --border:        #27272a;   /* zinc-800 */
+  --border-strong: #3f3f46;   /* zinc-700 */
+  --accent:        #6366f1;   /* indigo-500 (kept) */
+  --accent-hover:  #4f46e5;
+  --accent-fg:     #ffffff;
+  --success:       #22c55e;   /* green-500 brighter on dark */
+  --danger:        #ef4444;
+  --warn:          #f59e0b;
+  --info:          #60a5fa;   /* blue-400 */
+  --grad-from:     #6366f1;
+  --grad-via:      #818cf8;
+  --grad-to:       #8b5cf6;
+  --glow:          rgba(129, 140, 248, 0.5);
+
+  --shadow-xs: 0 1px 2px 0 rgb(0 0 0 / 0.4);
+  --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.5), 0 1px 2px -1px rgb(0 0 0 / 0.4);
+  --shadow-md: 0 4px 12px -2px rgb(0 0 0 / 0.5), 0 2px 6px -2px rgb(0 0 0 / 0.4);
+  --shadow-lg: 0 12px 32px -8px rgb(0 0 0 / 0.6), 0 4px 10px -4px rgb(0 0 0 / 0.45);
+}
+
+/* Map Tailwind utilities -> the vars above. inline = utilities reference the var,
+   so they flip via :root/.dark automatically (shadcn v4 idiom). */
+@theme inline {
+  --color-bg:            var(--bg);
+  --color-surface:       var(--surface);
+  --color-surface-2:     var(--surface-2);
+  --color-surface-3:     var(--surface-3);
+  --color-fg:            var(--fg);
+  --color-fg-muted:      var(--fg-muted);
+  --color-muted:         var(--muted);
+  --color-border:        var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-accent:        var(--accent);
+  --color-accent-hover:  var(--accent-hover);
+  --color-accent-fg:     var(--accent-fg);
+  --color-success:       var(--success);
+  --color-danger:        var(--danger);
+  --color-warn:          var(--warn);
+  --color-info:          var(--info);
+  --color-grad-from:     var(--grad-from);
+  --color-grad-via:      var(--grad-via);
+  --color-grad-to:       var(--grad-to);
+
+  --radius-sm: var(--radius-sm);
+  --radius:    var(--radius);
+  --radius-lg: var(--radius-lg);
+
+  --shadow-xs: var(--shadow-xs);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+
+  --font-sans:    var(--font-sans);
+  --font-mono:    var(--font-mono);
+  --font-display: var(--font-display);
+
+  --text-xs:   var(--text-xs);
+  --text-sm:   var(--text-sm);
+  --text-base: var(--text-base);
+  --text-lg:   var(--text-lg);
+  --text-xl:   var(--text-xl);
+  --text-2xl:  var(--text-2xl);
+
+  --animate-shimmer:   var(--animate-shimmer);
+  --animate-pulse-dot: var(--animate-pulse-dot);
+  --animate-fade-in:   var(--animate-fade-in);
+  --animate-row-in:    var(--animate-row-in);
+  --animate-stat-bump: var(--animate-stat-bump);
+  --animate-flow:      var(--animate-flow);
+}
+
+/* keyframes (global, once) */
+@keyframes shimmer    { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+@keyframes pulse-dot  { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:.45; transform:scale(.8); } }
+@keyframes fade-in    { from { opacity:0; } to { opacity:1; } }
+@keyframes row-in     { from { opacity:0; transform:translateY(-2px); } to { opacity:1; transform:none; } }
+@keyframes flow       { 0% { background-position:0% 50%; } 100% { background-position:200% 50%; } }
+/* stat-bump: brief accent tint flash on a tile frame; ends at surface so no jump.
+   color-mix re-skins per theme via var(--accent). */
+@keyframes stat-bump  {
+  0%   { background-color: color-mix(in srgb, var(--accent) 14%, transparent); }
+  100% { background-color: var(--surface); }
+}
+
+@layer base {
+  *         { border-color: var(--border); }
+  body      { background: var(--bg); color: var(--fg); font-family: var(--font-sans);
+              -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
+              font-feature-settings: "cv02","cv03","cv04","cv11"; }
+  ::selection { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+  /* Hide number input spin buttons (stat/turn/timeout fields). */
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type="number"] { -moz-appearance: textfield; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important;
+                         transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
+}

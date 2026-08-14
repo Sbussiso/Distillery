@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <title>Distillery</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236366f1' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2v6M9 8h6M8 22l4-10 4 10'/%3E%3Ccircle cx='12' cy='4' r='1.2' fill='%236366f1' stroke='none'/%3E%3C/svg%3E" />
+    <script>
+      // No-FOUC theme boot: apply the saved/preferred theme before first paint.
+      // Matches the themeStore logic in lib/state/theme.svelte.ts.
+      (function () {
+        try {
+          var t = localStorage.getItem("distillery-theme");
+          // Strict validation: only "light"/"dark" are accepted. A corrupted
+          // or extension-written value falls back to the OS preference, the
+          // same way theme.svelte.ts init() does — so the two paths can never
+          // disagree and flip the theme after first paint.
+          if (t !== "light" && t !== "dark")
+            t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+          if (t === "dark") document.documentElement.classList.add("dark");
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

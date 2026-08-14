@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark light" />
+  <title>Distillery</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23c8804a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 2v6M9 8h6M8 22l4-10 4 10'/%3E%3Ccircle cx='12' cy='4' r='1.2' fill='%23c8804a' stroke='none'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <h1>⚗️ Distillery</h1>
+    <div id="ollama-health" class="pill unknown">Ollama: checking…</div>
+  </header>
+
+  <main>
+    <!-- ============ Setup ============ -->
+    <section id="setup" class="card">
+      <h2 data-num="1"><span class="sec-num">1</span> · Teacher (being distilled)</h2>
+      <p class="muted">The local Ollama model whose answers we distil into a dataset.</p>
+      <div class="row">
+        <select id="teacher-model"><option value="">— refresh models —</option></select>
+        <button id="refresh-models" class="btn">Refresh models</button>
+      </div>
+      <div id="teacher-detail" class="muted small"></div>
+
+      <hr class="sep" />
+
+      <h2 data-num="2"><span class="sec-num">2</span> · Judge</h2>
+      <p class="muted">Generates questions and grades answers. Any provider via LiteLLM — point a bigger model at a smaller local one. Also simulates non-builtin tools.</p>
+      <div class="row">
+        <input id="judge-model" list="judge-models" placeholder="anthropic/claude-opus-5" />
+        <datalist id="judge-models"></datalist>
+        <select id="judge-effort">
+          <option value="">no thinking</option>
+          <option value="low">low</option>
+          <option value="medium" selected>medium</option>
+          <option value="high">high</option>
+        </select>
+      </div>
+      <div class="row">
+        <input id="judge-key" type="password" placeholder="API key (optional; else from env)" />
+        <button id="judge-test" class="btn">Test judge</button>
+        <span id="judge-test-result" class="muted small"></span>
+      </div>
+
+      <hr class="sep" />
+
+      <h2 data-num="3"><span class="sec-num">3</span> · Distillation</h2>
+      <div class="grid">
+        <label>Topics <span class="muted small">(comma-separated)</span>
+          <input id="topics" placeholder="python debugging, algorithms" />
+        </label>
+        <label>Difficulty
+          <select id="difficulty">
+            <option value="any" selected>any</option>
+            <option value="easy">easy</option>
+            <option value="medium">medium</option>
+            <option value="hard">hard</option>
+          </select>
+        </label>
+        <label>Target count
+          <input id="target" type="number" value="10" min="1" />
+        </label>
+        <label>Min score (1-10)
+          <input id="min-score" type="number" value="7" min="1" max="10" />
+        </label>
+        <label>Concurrency
+          <input id="concurrency" type="number" value="1" min="1" max="16" />
+        </label>
+        <label class="check">
+          <input id="include-thinking" type="checkbox" checked /> Capture teacher thinking
+        </label>
+      </div>
+      <label>Seed questions <span class="muted small">(one per line, optional)</span>
+        <textarea id="seeds" rows="3" placeholder="Why does this list comprehension raise?"></textarea>
+      </label>
+      <div class="grid">
+        <label>Teacher system prompt <span class="muted small">(optional)</span>
+          <textarea id="teacher-prompt" rows="2" placeholder="Leave blank for default CoT prompt"></textarea>
+        </label>
+        <label>Grading criteria <span class="muted small">(optional)</span>
+          <textarea id="grading-criteria" rows="2" placeholder="e.g. must include a code example"></textarea>
+        </label>
+      </div>
+
+      <hr class="sep" />
+
+      <h2 data-num="4"><span class="sec-num">4</span> · Multi-turn <span class="muted small">(optional)</span></h2>
+      <p class="muted">Each sample becomes a multi-turn conversation. The judge plays a curious user asking follow-ups.</p>
+      <label class="check"><input id="multi-turn" type="checkbox" /> Enable multi-turn conversations</label>
+      <div id="mt-controls" class="grid is-collapsed">
+        <label>Min turns
+          <input id="min-turns" type="number" value="2" min="1" max="20" />
+        </label>
+        <label>Max turns
+          <input id="max-turns" type="number" value="4" min="1" max="20" />
+        </label>
+        <label>Min turn score (veto) <span class="muted small">(optional, 1-10)</span>
+          <input id="min-turn-score" type="number" value="" min="1" max="10" placeholder="off" />
+        </label>
+        <label class="check">
+          <input id="history-include-thinking" type="checkbox" checked /> Feed prior thinking back into history
+        </label>
+      </div>
+
+      <hr class="sep" />
+
+      <h2 data-num="5"><span class="sec-num">5</span> · Tools / agents <span class="muted small">(optional)</span></h2>
+      <p class="muted">Give the teacher tools. The full tool-call trace (calls + results + final answer) is recorded so a student can be trained to act agentic. <strong>builtin</strong> tools run safe executors (calculator); <strong>simulate</strong> tools have the judge produce a plausible result; <strong>off</strong> omits the tool.</p>
+      <div class="row">
+        <label class="check"><input id="tools-enabled" type="checkbox" /> Enable tools</label>
+        <select id="tool-preset-select"><option value="">— add preset —</option></select>
+        <button id="tool-add" class="btn">+ Add tool</button>
+        <button id="tool-add-empty" class="btn">+ Blank tool</button>
+      </div>
+      <div id="tools-list"></div>
+      <div class="grid">
+        <label>Max tool rounds <span class="muted small">(inner loop cap per turn)</span>
+          <input id="max-tool-rounds" type="number" value="6" min="1" max="20" />
+        </label>
+        <label>Tool call timeout (s)
+          <input id="tool-call-timeout" type="number" value="60" min="5" max="600" />
+        </label>
+        <label class="check">
+          <input id="keep-partial" type="checkbox" /> Keep completed turns on abort
+        </label>
+      </div>
+
+      <div class="start-row">
+        <div class="row">
+          <button id="start" class="btn primary" disabled>Start distillation</button>
+          <span id="start-msg" class="muted small"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ Run ============ -->
+    <section id="run" class="card hidden">
+      <div class="run-header">
+        <h2>Distilling <span id="run-session" class="muted small"></span></h2>
+        <button id="stop" class="btn danger">Stop</button>
+      </div>
+      <div class="run-subbar">
+        <div class="stats">
+          <div class="stat"><div class="stat-num" id="s-kept">0</div><div class="stat-lbl">kept</div></div>
+          <div class="stat"><div class="stat-num" id="s-rejected">0</div><div class="stat-lbl">rejected</div></div>
+          <div class="stat"><div class="stat-num" id="s-grade-failed">0</div><div class="stat-lbl">grade failed</div></div>
+          <div class="stat"><div class="stat-num" id="s-aborted">0</div><div class="stat-lbl">aborted</div></div>
+          <div class="stat"><div class="stat-num" id="s-errors">0</div><div class="stat-lbl">errors</div></div>
+          <div class="stat"><div class="stat-num" id="s-rate">—</div><div class="stat-lbl">accept rate</div></div>
+          <div class="stat"><div class="stat-num" id="s-tokens">0</div><div class="stat-lbl">judge tokens</div></div>
+        </div>
+        <div class="progress"><div id="progress-bar" class="progress-bar"></div></div>
+      </div>
+      <div id="topic-counts" class="topics muted small"></div>
+      <div id="last-error" class="error hidden"></div>
+
+      <h3>Conversations / rounds</h3>
+      <div class="table-wrap" data-empty="No conversations yet — waiting for the judge…">
+        <table id="rounds">
+          <thead><tr><th>#</th><th>Question</th><th>Turns</th><th>Grade</th><th>Result</th><th>Tools</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div id="trace-view" class="trace-view is-collapsed"></div>
+
+      <h3>Export</h3>
+      <div class="row export-controls">
+        <label class="check"><input id="exp-thinking" type="checkbox" checked /> include thinking</label>
+        <label class="check"><input id="exp-tools-spec" type="checkbox" checked /> include tool spec</label>
+        <select id="exp-format">
+          <option value="separate_field">thinking: separate field</option>
+          <option value="inline_tags">thinking: inline tags</option>
+          <option value="strip">thinking: strip</option>
+        </select>
+        <button class="btn" data-fmt="sharegpt">Download ShareGPT</button>
+        <button class="btn" data-fmt="raw">Download raw</button>
+        <button class="btn" data-fmt="alpaca">Download Alpaca</button>
+      </div>
+    </section>
+
+    <!-- ============ Sessions ============ -->
+    <section class="card">
+      <h2>Past sessions</h2>
+      <div class="table-wrap" data-empty="No past sessions — start one above.">
+        <table id="sessions-table">
+          <thead><tr><th>ID</th><th>Teacher</th><th>Judge</th><th>Topics</th><th>Mode</th><th>Status</th><th>Kept</th><th>Updated</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <div class="row"><button id="refresh-sessions" class="btn">Refresh</button></div>
+    </section>
+  </main>
+
+  <div id="toast-root"></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
