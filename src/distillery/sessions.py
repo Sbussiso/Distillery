@@ -51,15 +51,19 @@ class SessionRegistry:
         s = self._active.get(session_id)
         return s._events if s else None
 
-    def delete(self, session_id: str) -> bool:
+    async def delete(self, session_id: str) -> bool:
         """Stop + forget an active session and wipe its on-disk directory.
         Cancelling the live task (rather than just stop()) means the run loop
-        never reaches its final _persist, so it can't recreate the dir we just
-        removed. Returns True if anything was on disk to remove."""
+        never reaches its final _persist, and waiting for it (run() also
+        cancels its producer/workers) guarantees nothing is still writing when
+        the directory is removed. Returns True if anything was on disk to remove.
+        Raises StoreError for an invalid session id."""
+        store.validate_id(session_id)
         self._active.pop(session_id, None)
         task = self._tasks.pop(session_id, None)
         if task is not None and not task.done():
             task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         return store.delete_session(session_id)
 
     # ---- listing ------------------------------------------------------------

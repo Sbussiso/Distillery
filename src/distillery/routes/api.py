@@ -25,7 +25,7 @@ from ..schemas import (
     ToolSimulateResult,
 )
 from ..sessions import registry
-from ..store import store
+from ..store import StoreError, store
 
 router = APIRouter(prefix="/api")
 
@@ -248,7 +248,11 @@ async def resume_session(session_id: str) -> DistillStarted:
 async def delete_session(session_id: str) -> dict:
     """Delete a session (active or on-disk). Cancels the live task first so a
     mid-run persist can't recreate the directory."""
-    if not registry.delete(session_id):
+    try:
+        deleted = await registry.delete(session_id)
+    except StoreError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not deleted:
         raise HTTPException(status_code=404, detail=f"session {session_id} not found")
     return {"ok": True}
 

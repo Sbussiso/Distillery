@@ -79,6 +79,13 @@ except Exception as e:
 # protects the teacher-feedback path + on-disk payload from 100KB+ blowups.
 _RESULT_CAP = 4000
 
+# Producer backoff when no new question can be obtained (judge error, or only
+# duplicates): wait 1s, 2s, 4s, ... (capped) between attempts, and fail the
+# session after this many consecutive misses instead of spinning forever
+# against a broken or rate-limited judge.
+_QGEN_MAX_FAILURES = 5
+_QGEN_BACKOFF_CAP = 30.0
+
 
 class AgentLoopAborted(RuntimeError):
     """Raised by the deterministic abort gate (empty answer or repeated
@@ -251,10 +258,20 @@ class DistillSession:
         workers = [asyncio.create_task(self._worker(i)) for i in range(self.concurrency)]
 
         try:
-            await producer
-        except Exception as e:  # noqa: BLE001
-            await self._fail(e)
-        await asyncio.gather(*workers, return_exceptions=True)
+            try:
+                await producer
+            except Exception as e:  # noqa: BLE001
+                await self._fail(e)
+            await asyncio.gather(*workers, return_exceptions=True)
+        except asyncio.CancelledError:
+            # Cancelled from outside (registry.delete). The producer/workers
+            # are separate tasks, so cancel and await them too; otherwise an
+            # in-flight round could write into a directory being deleted.
+            for t in (producer, *workers):
+                t.cancel()
+            await asyncio.gather(producer, *workers, return_exceptions=True)
+            self.status = "stopped"
+            raise
 
         if self.status == "running":
             self.status = "completed" if self.kept >= self.target_count else "stopped"
@@ -293,6 +310,14 @@ class DistillSession:
     # ---- producer -----------------------------------------------------------
     async def _producer(self) -> None:
         assert self._queue is not None
+        try:
+            await self._produce()
+        finally:
+            self._stop.set()  # let workers drain and exit (also on failure)
+
+    async def _produce(self) -> None:
+        assert self._queue is not None
+        misses = 0
         while not self._stop.is_set():
             async with self._lock:
                 if self.kept >= self.target_count:
@@ -302,13 +327,15 @@ class DistillSession:
                 steer = self._steer_topic()
 
             question: str | None = None
+            last_err = "only empty or duplicate questions generated"
             for _ in range(5):  # try a few times to get a non-duplicate
                 try:
                     q = await self.judge.generate_question(
                         self.topics, self.seeds, self.difficulty, asked_snapshot, topic_counts_snapshot
                     )
                 except JudgeError as e:
-                    await self._record_error(f"question gen failed: {e}")
+                    last_err = f"question gen failed: {e}"
+                    await self._record_error(last_err)
                     break
                 if not q:
                     continue
@@ -323,7 +350,16 @@ class DistillSession:
                 break
 
             if not question:
+                misses += 1
+                if misses >= _QGEN_MAX_FAILURES:
+                    raise RuntimeError(f"no new question after {misses} attempts: {last_err}")
+                delay = min(2.0 ** (misses - 1), _QGEN_BACKOFF_CAP)
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                except asyncio.TimeoutError:
+                    pass
                 continue
+            misses = 0
             await self._emit(ProgressEvent(type="question", question=question, topic=steer, tools_active=self._tools_active))
             # Bounded put: when the target is reached, workers break out of
             # their loop WITHOUT draining the queue, so a plain put on a full
@@ -337,8 +373,6 @@ class DistillSession:
                 except asyncio.TimeoutError:
                     continue
             # If stop was set, the item is dropped — fine, workers are exiting.
-
-        self._stop.set()  # let workers drain and exit
 
     def _steer_topic(self) -> str | None:
         if not self.topics:
@@ -777,6 +811,10 @@ class DistillSession:
             except asyncio.TimeoutError:
                 pass
             return "[error: tool timed out]", "timeout"
+        except asyncio.CancelledError:
+            # Session cancelled (e.g. deleted): don't leave the child running.
+            proc.kill()
+            raise
         out = stdout.decode("utf-8", errors="replace")
         return (out, None) if proc.returncode == 0 else (out, "builtin error")
 
