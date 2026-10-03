@@ -14,6 +14,7 @@ sharegpt on demand to honour include_thinking / thinking_format / tools.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -28,6 +29,10 @@ SESSION = "session.json"
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 
+# Session ids are generated as uuid hex; anything else (".", "..", separators)
+# must never be joined onto the datasets root.
+_SESSION_ID_RE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
 
 class StoreError(RuntimeError):
     pass
@@ -38,8 +43,17 @@ class Store:
         self.root = root or settings.datasets_path
 
     # ---- paths --------------------------------------------------------------
+    @staticmethod
+    def validate_id(session_id: str) -> None:
+        if not _SESSION_ID_RE.fullmatch(session_id):
+            raise StoreError(f"invalid session id {session_id!r}")
+
+    def _dir(self, session_id: str) -> Path:
+        self.validate_id(session_id)
+        return self.root / session_id
+
     def session_dir(self, session_id: str) -> Path:
-        d = self.root / session_id
+        d = self._dir(session_id)
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -66,8 +80,7 @@ class Store:
         tmp.replace(d / SESSION)
 
     def load_session(self, session_id: str) -> dict[str, Any]:
-        d = self.session_dir(session_id)
-        f = d / SESSION
+        f = self._dir(session_id) / SESSION
         if not f.exists():
             raise StoreError(f"session {session_id} not found")
         meta = json.loads(f.read_text(encoding="utf-8"))
@@ -93,19 +106,21 @@ class Store:
         return out
 
     def iter_samples(self, session_id: str) -> Iterator[dict[str, Any]]:
-        f = self.session_dir(session_id) / RAW
+        f = self._dir(session_id) / RAW
         if not f.exists():
             return
-        for line in f.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line:
-                yield json.loads(line)
+        with f.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
 
     def count_samples(self, session_id: str) -> int:
-        f = self.session_dir(session_id) / RAW
+        f = self._dir(session_id) / RAW
         if not f.exists():
             return 0
-        return sum(1 for line in f.read_text(encoding="utf-8").splitlines() if line.strip())
+        with f.open(encoding="utf-8") as fh:
+            return sum(1 for line in fh if line.strip())
 
     def delete_session(self, session_id: str) -> bool:
         """Remove a session's entire on-disk directory. Returns True if it
@@ -113,17 +128,21 @@ class Store:
         cancels the live task first so a mid-run _persist can't resurrect it."""
         import shutil
 
-        d = self.root / session_id
+        d = self._dir(session_id)
         if not d.exists():
             return False
         shutil.rmtree(d)
         return True
 
     def get_samples(self, session_id: str, offset: int, limit: int) -> tuple[int, list[Sample]]:
-        all_rows = list(self.iter_samples(session_id))
-        total = len(all_rows)
-        page = all_rows[offset : offset + limit]
-        return total, [Sample(**r) for r in page]
+        # Stream the file: only the requested page is parsed into Samples.
+        total = 0
+        page: list[Sample] = []
+        for row in self.iter_samples(session_id):
+            if offset <= total < offset + limit:
+                page.append(Sample(**row))
+            total += 1
+        return total, page
 
     # ---- export -------------------------------------------------------------
     def export_path(
@@ -144,7 +163,9 @@ class Store:
             system message (default true). Set false to export pure conversation
             turns without the tool spec.
         """
-        d = self.session_dir(session_id)
+        d = self._dir(session_id)
+        if not d.is_dir():
+            raise StoreError(f"session {session_id} not found")
         fmt = fmt.lower()
         if fmt == "raw":
             return d / RAW

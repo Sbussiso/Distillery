@@ -79,6 +79,18 @@ except Exception as e:
 # protects the teacher-feedback path + on-disk payload from 100KB+ blowups.
 _RESULT_CAP = 4000
 
+# Producer backoff when no new question can be obtained (judge error, or only
+# duplicates): wait 1s, 2s, 4s, ... (capped) between attempts, and fail the
+# session after this many consecutive misses instead of spinning forever
+# against a broken or rate-limited judge.
+_QGEN_MAX_FAILURES = 5
+_QGEN_BACKOFF_CAP = 30.0
+
+# Fail the session after this many rounds in a row end in an error (e.g.
+# Ollama down, judge rejecting every grade call). Without it, workers fail
+# instantly in a hot loop while the producer keeps paying for new questions.
+_MAX_FAILED_ROUNDS = 5
+
 
 class AgentLoopAborted(RuntimeError):
     """Raised by the deterministic abort gate (empty answer or repeated
@@ -90,6 +102,22 @@ def _cap_result(s: Any, limit: int = _RESULT_CAP) -> str:
     the persisted trace. The grading transcript applies its own smaller cap."""
     s = str(s)
     return s if len(s) <= limit else s[:limit] + f" ...[truncated {len(s) - limit} chars]"
+
+
+def _put_drop_oldest(q: asyncio.Queue, item: Any) -> None:
+    """Non-blocking put; if a client isn't draining, drop its oldest event
+    rather than grow memory without bound."""
+    try:
+        q.put_nowait(item)
+    except asyncio.QueueFull:
+        try:
+            q.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            q.put_nowait(item)
+        except asyncio.QueueFull:
+            pass
 
 
 def _normalize(q: str) -> str:
@@ -182,6 +210,7 @@ class DistillSession:
         self.grade_failed = 0
         self.error_count = 0
         self.aborted = 0
+        self._failed_rounds = 0  # consecutive rounds that ended in an error
         self.topic_counts: dict[str, int] = {t: 0 for t in self.topics}
         self.asked: list[str] = []
         self._asked_set: set[str] = set()
@@ -206,15 +235,19 @@ class DistillSession:
             max_tokens=max_tokens,
             timeout=judge_timeout,
         )
+        self.judge.on_usage = self._add_usage
         self.ollama = OllamaClient(timeout=teacher_timeout)
         self._stop = asyncio.Event()
         self._lock = asyncio.Lock()
         self._queue: asyncio.Queue[tuple[str, str | None]] | None = None
-        # Bounded so _emit's drop-oldest-on-QueueFull path actually fires when
-        # no WebSocket client is draining (headless/scripted runs, or a closed
-        # UI tab). An unbounded queue made that path dead code and let a long
-        # run grow memory without bound until the OS killed it mid-distill.
-        self._events: asyncio.Queue[ProgressEvent] = asyncio.Queue(maxsize=512)
+        # One bounded queue per connected WebSocket client, so every client
+        # sees every event (a single shared queue split events between tabs).
+        # Nothing is buffered while no client is connected: finished rounds
+        # are read back from disk, and the events of conversations still in
+        # flight are kept in _live_events and replayed to a new subscriber, so
+        # a client never sees a finished conversation twice or a half one.
+        self._subscribers: set[asyncio.Queue[ProgressEvent]] = set()
+        self._live_events: dict[str, list[ProgressEvent]] = {}
         # True when this session was rebuilt from disk by from_disk(). Guards
         # run() from re-probing tool capability on resume (the capability was
         # already determined in the original run and persisted in session.json;
@@ -251,10 +284,20 @@ class DistillSession:
         workers = [asyncio.create_task(self._worker(i)) for i in range(self.concurrency)]
 
         try:
-            await producer
-        except Exception as e:  # noqa: BLE001
-            await self._fail(e)
-        await asyncio.gather(*workers, return_exceptions=True)
+            try:
+                await producer
+            except Exception as e:  # noqa: BLE001
+                await self._fail(e)
+            await asyncio.gather(*workers, return_exceptions=True)
+        except asyncio.CancelledError:
+            # Cancelled from outside (registry.delete). The producer/workers
+            # are separate tasks, so cancel and await them too; otherwise an
+            # in-flight round could write into a directory being deleted.
+            for t in (producer, *workers):
+                t.cancel()
+            await asyncio.gather(producer, *workers, return_exceptions=True)
+            self.status = "stopped"
+            raise
 
         if self.status == "running":
             self.status = "completed" if self.kept >= self.target_count else "stopped"
@@ -293,6 +336,14 @@ class DistillSession:
     # ---- producer -----------------------------------------------------------
     async def _producer(self) -> None:
         assert self._queue is not None
+        try:
+            await self._produce()
+        finally:
+            self._stop.set()  # let workers drain and exit (also on failure)
+
+    async def _produce(self) -> None:
+        assert self._queue is not None
+        misses = 0
         while not self._stop.is_set():
             async with self._lock:
                 if self.kept >= self.target_count:
@@ -302,13 +353,15 @@ class DistillSession:
                 steer = self._steer_topic()
 
             question: str | None = None
+            last_err = "only empty or duplicate questions generated"
             for _ in range(5):  # try a few times to get a non-duplicate
                 try:
                     q = await self.judge.generate_question(
                         self.topics, self.seeds, self.difficulty, asked_snapshot, topic_counts_snapshot
                     )
                 except JudgeError as e:
-                    await self._record_error(f"question gen failed: {e}")
+                    last_err = f"question gen failed: {e}"
+                    await self._record_error(last_err)
                     break
                 if not q:
                     continue
@@ -323,7 +376,16 @@ class DistillSession:
                 break
 
             if not question:
+                misses += 1
+                if misses >= _QGEN_MAX_FAILURES:
+                    raise RuntimeError(f"no new question after {misses} attempts: {last_err}")
+                delay = min(2.0 ** (misses - 1), _QGEN_BACKOFF_CAP)
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=delay)
+                except asyncio.TimeoutError:
+                    pass
                 continue
+            misses = 0
             await self._emit(ProgressEvent(type="question", question=question, topic=steer, tools_active=self._tools_active))
             # Bounded put: when the target is reached, workers break out of
             # their loop WITHOUT draining the queue, so a plain put on a full
@@ -338,8 +400,6 @@ class DistillSession:
                     continue
             # If stop was set, the item is dropped — fine, workers are exiting.
 
-        self._stop.set()  # let workers drain and exit
-
     def _steer_topic(self) -> str | None:
         if not self.topics:
             return None
@@ -349,7 +409,10 @@ class DistillSession:
     async def _worker(self, _idx: int) -> None:
         assert self._queue is not None
         while True:
-            if self._stop.is_set() and self._queue.empty():
+            # Exit as soon as stop is set (user Stop, target reached, or the
+            # producer failed). Rounds already in progress still finish, but
+            # queued questions are not started; they stay in the asked-set.
+            if self._stop.is_set():
                 break
             try:
                 question, topic = await asyncio.wait_for(self._queue.get(), timeout=0.5)
@@ -357,9 +420,21 @@ class DistillSession:
                 continue
 
             try:
-                await self._process_round(question, topic)
+                ok = await self._process_round(question, topic)
             except Exception as e:  # noqa: BLE001 - never let a worker die
                 await self._record_error(f"round failed: {e}")
+                ok = False
+
+            if ok:
+                self._failed_rounds = 0
+            else:
+                self._failed_rounds += 1
+                if self._failed_rounds >= _MAX_FAILED_ROUNDS and self.status == "running":
+                    await self._fail(RuntimeError(
+                        f"{self._failed_rounds} rounds in a row failed; last error: {self.last_error}"
+                    ))
+                    self._stop.set()
+                    break
 
             async with self._lock:
                 if self.kept >= self.target_count:
@@ -367,11 +442,13 @@ class DistillSession:
                     break
 
     # ---- round dispatch -----------------------------------------------------
-    async def _process_round(self, question: str, topic: str | None) -> None:
+    async def _process_round(self, question: str, topic: str | None) -> bool:
+        """Run one round. Returns False if it ended in an error (single-turn
+        errors raise instead)."""
         if self.multi_turn or self._tools_active:
-            await self._process_conversation(question, topic)
-        else:
-            await self._process_single(question, topic)
+            return await self._process_conversation(question, topic)
+        await self._process_single(question, topic)
+        return True
 
     # ---- single-turn (legacy, byte-identical path) -------------------------
     async def _process_single(self, question: str, topic: str | None) -> None:
@@ -397,8 +474,7 @@ class DistillSession:
             ProgressEvent(type="answer", question=question, answer=answer, thinking=thinking or None)
         )
 
-        grade, usage = await self.judge.grade(question, answer, self.grading_criteria)
-        await self._track_usage(usage)
+        grade, _ = await self.judge.grade(question, answer, self.grading_criteria)
         async with self._lock:
             self.last_grade = grade
         await self._emit(ProgressEvent(type="grade", question=question, grade=grade))
@@ -437,7 +513,7 @@ class DistillSession:
         await self._persist()
 
     # ---- multi-turn / agentic conversation ---------------------------------
-    async def _process_conversation(self, question: str, topic: str | None) -> None:
+    async def _process_conversation(self, question: str, topic: str | None) -> bool:
         conv_id = uuid.uuid4().hex[:8]
         turns: list[Turn] = []
         await self._emit(ProgressEvent(
@@ -497,10 +573,15 @@ class DistillSession:
             await self._abort_conversation(conv_id, turns, topic, reason=str(e))
         except OllamaError as e:
             await self._record_error(f"conversation failed (ollama): {e}")
+            return False
         except JudgeError as e:
             await self._record_error(f"conversation failed (judge): {e}")
+            return False
         finally:
+            # Drop replay state if it ended without conversation_graded.
+            self._live_events.pop(conv_id, None)
             await self._persist()
+        return True
 
     async def _answer_turn(self, question: str, prior_turns: list[Turn], conv_id: str, turn_idx: int) -> Turn:
         if self._tools_active:
@@ -528,13 +609,24 @@ class DistillSession:
         return turn
 
     async def _finish_conversation(self, conv_id: str, turns: list[Turn], topic: str | None) -> None:
-        grade, usage = await self.judge.grade_conversation(
+        grade, _ = await self.judge.grade_conversation(
             turns, self.grading_criteria, tools_summary=self._tools_summary()
         )
-        await self._track_usage(usage)
         async with self._lock:
             self.last_grade = grade
         await self._emit(ProgressEvent(type="grade", grade=grade, conversation_id=conv_id, turn_count=len(turns)))
+
+        # A grade the judge failed to parse is a grade failure, not a rejection,
+        # whether or not a per-turn floor is configured.
+        if grade.reasoning == "parse_failed" and grade.score == 0:
+            async with self._lock:
+                self.grade_failed += 1
+            await self._emit(ProgressEvent(type="grade_failed", grade=grade, conversation_id=conv_id, grade_failed=self.grade_failed))
+            await self._emit(ProgressEvent(
+                type="conversation_graded", conversation_id=conv_id, grade=grade,
+                grade_failed=self.grade_failed, turn_count=len(turns),
+            ))
+            return
 
         # Opt-in per-turn veto. Fail CLOSED: if the judge didn't return exactly
         # one turn_score per turn, the floor can't be verified for every turn, so
@@ -559,12 +651,6 @@ class DistillSession:
                     rejected=self.rejected, turn_count=len(turns), message="min_turn_score veto",
                 ))
                 return
-
-        if grade.reasoning == "parse_failed" and grade.score == 0:
-            async with self._lock:
-                self.grade_failed += 1
-            await self._emit(ProgressEvent(type="grade_failed", grade=grade, conversation_id=conv_id, grade_failed=self.grade_failed))
-            return
 
         if grade.score >= self.min_score:
             sample = self._build_sample(turns, conv_id, grade)
@@ -745,10 +831,9 @@ class DistillSession:
                 return _cap_result(result), "builtin", err
         if policy == "simulate":
             try:
-                result, usage = await self.judge.simulate_tool_result(
+                result, _ = await self.judge.simulate_tool_result(
                     td, call.arguments, timeout=self.tool_call_timeout
                 )
-                await self._track_usage(usage)
                 return _cap_result(result), "simulate", None
             except JudgeError as e:
                 return _cap_result(f"[error: {e}]"), "simulate", str(e)
@@ -777,6 +862,10 @@ class DistillSession:
             except asyncio.TimeoutError:
                 pass
             return "[error: tool timed out]", "timeout"
+        except asyncio.CancelledError:
+            # Session cancelled (e.g. deleted): don't leave the child running.
+            proc.kill()
+            raise
         out = stdout.decode("utf-8", errors="replace")
         return (out, None) if proc.returncode == 0 else (out, "builtin error")
 
@@ -819,13 +908,13 @@ class DistillSession:
             return ids
 
     # ---- helpers -------------------------------------------------------------
-    async def _track_usage(self, usage: dict[str, int] | None) -> None:
-        if not usage:
-            return
-        async with self._lock:
-            self.tokens["prompt"] += usage.get("prompt", 0)
-            self.tokens["completion"] += usage.get("completion", 0)
-            self.tokens["total"] += usage.get("total", 0)
+    def _add_usage(self, usage: dict[str, int]) -> None:
+        """Judge.on_usage hook: called for every successful judge call, so
+        question generation, follow-ups and grade retries are all counted.
+        Synchronous (no await), so it can't interleave with other updates."""
+        self.tokens["prompt"] += usage.get("prompt", 0)
+        self.tokens["completion"] += usage.get("completion", 0)
+        self.tokens["total"] += usage.get("total", 0)
 
     async def _record_error(self, msg: str) -> None:
         async with self._lock:
@@ -839,19 +928,30 @@ class DistillSession:
             self.last_error = str(e)
         await self._persist()
 
+    def subscribe(self) -> asyncio.Queue[ProgressEvent]:
+        """Register a client queue, pre-seeded with the events of every
+        conversation still in progress so the client can render them."""
+        q: asyncio.Queue[ProgressEvent] = asyncio.Queue(maxsize=512)
+        for events in self._live_events.values():
+            for event in events:
+                _put_drop_oldest(q, event)
+        self._subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue[ProgressEvent]) -> None:
+        self._subscribers.discard(q)
+
     async def _emit(self, event: ProgressEvent) -> None:
-        # Non-blocking put; if the WS isn't draining, drop oldest to avoid OOM.
-        try:
-            self._events.put_nowait(event)
-        except asyncio.QueueFull:
-            try:
-                self._events.get_nowait()
-            except asyncio.QueueEmpty:
-                pass
-            try:
-                self._events.put_nowait(event)
-            except asyncio.QueueFull:
-                pass
+        cid = event.conversation_id
+        if cid:
+            if event.type == "conversation_started":
+                self._live_events[cid] = [event]
+            elif event.type == "conversation_graded":
+                self._live_events.pop(cid, None)
+            elif cid in self._live_events:
+                self._live_events[cid].append(event)
+        for q in self._subscribers:
+            _put_drop_oldest(q, event)
 
     async def _persist(self) -> None:
         async with self._lock:
@@ -876,6 +976,7 @@ class DistillSession:
             "max_tokens": self.max_tokens,
             "teacher_timeout": self.teacher_timeout,
             "judge_timeout": self.judge_timeout,
+            "judge_reasoning_effort": self.judge.reasoning_effort,
             "status": self.status,
             "kept": self.kept,
             "rejected": self.rejected,
@@ -921,6 +1022,7 @@ class DistillSession:
             max_tokens=meta.get("max_tokens", 2048),
             teacher_timeout=meta.get("teacher_timeout", 180.0),
             judge_timeout=meta.get("judge_timeout", 120.0),
+            judge_reasoning_effort=meta.get("judge_reasoning_effort"),
             # multi-turn
             multi_turn=meta.get("multi_turn", False),
             min_turns=meta.get("min_turns", 1),

@@ -25,7 +25,7 @@ from ..schemas import (
     ToolSimulateResult,
 )
 from ..sessions import registry
-from ..store import store
+from ..store import StoreError, store
 
 router = APIRouter(prefix="/api")
 
@@ -248,7 +248,11 @@ async def resume_session(session_id: str) -> DistillStarted:
 async def delete_session(session_id: str) -> dict:
     """Delete a session (active or on-disk). Cancels the live task first so a
     mid-run persist can't recreate the directory."""
-    if not registry.delete(session_id):
+    try:
+        deleted = await registry.delete(session_id)
+    except StoreError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not deleted:
         raise HTTPException(status_code=404, detail=f"session {session_id} not found")
     return {"ok": True}
 
@@ -297,15 +301,12 @@ async def distill_stream(ws: WebSocket, session_id: str) -> None:
         await ws.close()
         return
 
-    # Send an initial status snapshot.
-    await ws.send_text(json.dumps({"type": "status", "status": s.status_obj().model_dump(mode="json")}))
-
-    events = registry.events(session_id)
-    if events is None:
-        await ws.close()
-        return
-
+    # Subscribe before the snapshot so no event falls between the two. Each
+    # client gets its own queue (pre-seeded with in-flight conversations).
+    events = s.subscribe()
     try:
+        await ws.send_text(json.dumps({"type": "status", "status": s.status_obj().model_dump(mode="json")}))
+
         while True:
             # Drain events as they arrive; bail when the session is done.
             try:
@@ -320,6 +321,7 @@ async def distill_stream(ws: WebSocket, session_id: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        s.unsubscribe(events)
         try:
             await ws.close()
         except Exception:

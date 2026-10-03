@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from .config import settings
 from .routes.api import router
 
 # Where the built Svelte/Vite frontend lives (preferred), and the legacy
@@ -31,12 +32,13 @@ def _find_dir(candidates: list[Path], marker: str) -> Path | None:
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Distillery", version="0.1.0")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    if settings.cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.cors_origins,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
     app.include_router(router)
 
     frontend_dir = _find_dir(_FRONTEND_CANDIDATES, "index.html")
