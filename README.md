@@ -77,6 +77,25 @@ parallel. Default `1` is the simple sequential model; raise it for throughput.
   officially expose Ollama reasoning, which is why the judge uses LiteLLM but
   the teacher does not.
 - Per-round errors (Ollama down, judge non-JSON, bad key) are non-fatal: they
-  increment an error/grade-failed counter and the run continues.
+  increment an error/grade-failed counter and the run continues. If 5 rounds
+  in a row fail, or the judge can't produce a new question 5 times in a row
+  (with backoff between attempts), the session stops as `errored` instead of
+  retrying forever; fix the cause and resume it.
 - API keys are never persisted by the app; LiteLLM reads them from env, or you
-  pass one per-request from the UI.
+  pass one per-request from the UI. A per-request key is reused when you
+  resume the session in the same server process; after a restart, resume
+  falls back to the env key.
+- The API only accepts same-origin browser requests. To call it from a page
+  on another origin, list it in `DISTILLERY_CORS_ORIGINS` (a JSON list, e.g.
+  `DISTILLERY_CORS_ORIGINS='["http://localhost:3000"]'`).
+
+## Development
+
+```bash
+uv run pytest -q                        # unit tests (no Ollama or API key needed)
+uv run python scripts/smoke_test.py     # format/parsing smoke tests
+cd frontend && npm ci && npm run check  # frontend type-check
+```
+
+`scripts/live_*_smoke.py` exercise a real Ollama instance. CI runs the tests,
+the smoke script, and the frontend check + build on every pull request.

@@ -3,7 +3,7 @@
 // last error. The WS reducer in stream.ts mutates this state directly.
 //
 // `liveConvs` (in-progress multi-turn/agentic conversations) and the
-// single-turn `pendingAnswer` are kept as plain module state in stream.ts —
+// single-turn `pendingAnswers` are kept as plain module state in stream.ts —
 // they are scratch buffers, not reactive UI; only completed rounds get pushed
 // here, exactly as the original app.js only touched the DOM on finalize.
 

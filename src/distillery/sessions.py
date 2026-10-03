@@ -10,7 +10,7 @@ import asyncio
 from typing import Iterator
 
 from .distiller import DistillSession
-from .schemas import ProgressEvent, SessionMeta
+from .schemas import SessionMeta
 from .store import store
 
 
@@ -46,10 +46,6 @@ class SessionRegistry:
             s.stop()
             return True
         return False
-
-    def events(self, session_id: str) -> asyncio.Queue[ProgressEvent] | None:
-        s = self._active.get(session_id)
-        return s._events if s else None
 
     async def delete(self, session_id: str) -> bool:
         """Stop + forget an active session and wipe its on-disk directory.
@@ -135,6 +131,11 @@ class SessionRegistry:
             return None
         if session.kept >= session.target_count:
             return session  # already complete; just return as-is
+        if existing is not None:
+            # The judge API key is never written to disk; carry over the one
+            # this session was started with so resume doesn't silently fall
+            # back to the key from the environment.
+            session.judge.api_key = existing.judge.api_key
         self.start(session)
         return session
 

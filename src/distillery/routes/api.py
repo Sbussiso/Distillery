@@ -301,15 +301,12 @@ async def distill_stream(ws: WebSocket, session_id: str) -> None:
         await ws.close()
         return
 
-    # Send an initial status snapshot.
-    await ws.send_text(json.dumps({"type": "status", "status": s.status_obj().model_dump(mode="json")}))
-
-    events = registry.events(session_id)
-    if events is None:
-        await ws.close()
-        return
-
+    # Subscribe before the snapshot so no event falls between the two. Each
+    # client gets its own queue (pre-seeded with in-flight conversations).
+    events = s.subscribe()
     try:
+        await ws.send_text(json.dumps({"type": "status", "status": s.status_obj().model_dump(mode="json")}))
+
         while True:
             # Drain events as they arrive; bail when the session is done.
             try:
@@ -324,6 +321,7 @@ async def distill_stream(ws: WebSocket, session_id: str) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        s.unsubscribe(events)
         try:
             await ws.close()
         except Exception:

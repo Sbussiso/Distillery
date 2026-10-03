@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Callable
 
 import litellm
 
@@ -172,6 +172,10 @@ class Judge:
         self.api_key = api_key
         self.max_tokens = max_tokens
         self.timeout = timeout
+        # Called with the usage of every successful completion (including
+        # question generation, follow-ups and parse-failure retries) so the
+        # owner can keep accurate token totals.
+        self.on_usage: Callable[[dict[str, int]], None] | None = None
         # None / "none" -> no reasoning param sent.
         self.reasoning_effort: str | None = None
         if reasoning_effort and reasoning_effort.lower() not in ("none", ""):
@@ -205,9 +209,12 @@ class Judge:
                         "completion": int(getattr(usage, "completion_tokens", 0) or 0),
                         "total": int(getattr(usage, "total_tokens", 0) or 0),
                     }
-                return text, usage_dict
             except Exception as e:  # noqa: BLE001 - surface to caller
                 last_err = e
+                continue
+            if self.on_usage is not None and usage_dict:
+                self.on_usage(usage_dict)
+            return text, usage_dict
         raise JudgeError(f"judge call failed: {last_err}")
 
     # ---- question generation ------------------------------------------------

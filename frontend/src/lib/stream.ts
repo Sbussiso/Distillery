@@ -3,7 +3,7 @@
 // `applyStatus` logic, mutating the reactive `run` store (and reading `form`
 // for min_score and the session id).
 //
-// liveConvs and pendingAnswer are plain module scratch state — they buffer
+// liveConvs and pendingAnswers are plain module scratch state — they buffer
 // in-progress conversations that aren't worth rendering until they finalize,
 // exactly as the original app kept them in non-reactive JS objects and only
 // touched the DOM on finalize.
@@ -23,7 +23,9 @@ interface ConvLive {
 let ws: WebSocket | null = null;
 let roundIdx = 0;
 let liveConvs: Record<string, ConvLive> = {};
-let pendingAnswer: ProgressEvent | null = null;
+// Single-turn answers waiting for their grade, keyed by question: with
+// concurrency > 1, answer/grade events from different workers interleave.
+let pendingAnswers = new Map<string, ProgressEvent>();
 let streamSessionId: string | null = null;
 
 export function openStream(sessionId: string): void {
@@ -60,7 +62,7 @@ export function closeStream(): void {
   // conversation_graded (e.g. user hit "New" mid-stream) so they can't leak
   // or bleed into the next session.
   liveConvs = {};
-  pendingAnswer = null;
+  pendingAnswers = new Map();
 }
 
 function minScore(): number {
@@ -222,14 +224,16 @@ function handleEvent(e: ProgressEvent): void {
       // single-turn path only: hold until grade. The agentic path always
       // sets conversation_id on its answer/grade events; let finalizeConv own
       // those rows so we don't double-render.
-      if (!e.conversation_id) pendingAnswer = e;
+      if (!e.conversation_id) pendingAnswers.set(e.question ?? "", e);
       break;
-    case "grade":
-      if (pendingAnswer && !e.conversation_id) {
-        addRound(pendingAnswer, e.grade ?? { score: 0, passed: false, reasoning: "parse_failed" });
-        pendingAnswer = null;
+    case "grade": {
+      const ans = e.conversation_id ? undefined : pendingAnswers.get(e.question ?? "");
+      if (ans) {
+        addRound(ans, e.grade ?? { score: 0, passed: false, reasoning: "parse_failed" });
+        pendingAnswers.delete(e.question ?? "");
       }
       break;
+    }
     case "kept":
     case "rejected":
     case "grade_failed":
