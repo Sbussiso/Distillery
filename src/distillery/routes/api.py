@@ -24,7 +24,7 @@ from ..schemas import (
     ToolSimulateRequest,
     ToolSimulateResult,
 )
-from ..sessions import registry
+from ..sessions import disk_status, registry
 from ..store import StoreError, store
 
 router = APIRouter(prefix="/api")
@@ -211,7 +211,7 @@ async def get_session(session_id: str) -> SessionStatus:
         teacher_model=meta["teacher_model"],
         judge_model=meta["judge_model"],
         topics=meta.get("topics", []),
-        status=meta.get("status", "stopped"),  # type: ignore[arg-type]
+        status=disk_status(meta),  # type: ignore[arg-type]
         target_count=meta.get("target_count", 0),
         kept=meta.get("kept", 0),
         rejected=meta.get("rejected", 0),
