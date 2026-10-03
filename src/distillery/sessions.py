@@ -14,6 +14,14 @@ from .schemas import SessionMeta
 from .store import store
 
 
+def disk_status(meta: dict) -> str:
+    """Status of a session that isn't active in this process. One saved as
+    "running" was interrupted (server stopped or crashed mid-run), so report
+    it as "stopped": that's what lets the UI offer Resume instead of View."""
+    status = meta.get("status", "stopped")
+    return "stopped" if status == "running" else status
+
+
 class SessionRegistry:
     def __init__(self) -> None:
         self._active: dict[str, DistillSession] = {}
@@ -83,7 +91,7 @@ class SessionRegistry:
                     teacher_model=m.get("teacher_model", ""),
                     judge_model=m.get("judge_model", ""),
                     topics=m.get("topics", []),
-                    status=m.get("status", "stopped"),
+                    status=disk_status(m),
                     target_count=m.get("target_count", 0),
                     kept=m.get("kept", 0),
                     rejected=m.get("rejected", 0),

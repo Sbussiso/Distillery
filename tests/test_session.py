@@ -195,3 +195,14 @@ def test_conversation_rounds_report_success():
     asyncio.run(asyncio.wait_for(s.run(), timeout=10))
     assert s.status == "completed"
     assert s.kept == 2
+
+
+def test_interrupted_session_is_reported_as_stopped():
+    from fastapi.testclient import TestClient
+
+    from distillery.app import app
+
+    s = make_session()
+    asyncio.run(s._persist())  # a crash leaves status "running" on disk
+    assert [m.status for m in SessionRegistry().list_metas()] == ["stopped"]
+    assert TestClient(app).get(f"/api/distill/{s.id}").json()["status"] == "stopped"
